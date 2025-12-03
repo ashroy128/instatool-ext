@@ -110,7 +110,8 @@ def main():
             st.success("✅ Connected to Server Account")
         else:
             st.info("Paste your **InstaKey** below:")
-            cookie_content = st.text_area("Access Key", height=100, type="password", help="Use the extension to copy your key.")
+            # Added unique key to prevent DuplicateWidgetID error
+            cookie_content = st.text_area("Access Key", height=100, type="password", help="Use the extension to copy your key.", key="auth_key_input")
         
         cookie_path = get_cookie_file_from_text(cookie_content)
         
