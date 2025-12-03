@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import yt_dlp
 import os
 import shutil
@@ -6,10 +7,11 @@ import zipfile
 import tempfile
 import ffmpeg
 import re
+import time
 from pathlib import Path
 
 # --- Page Config ---
-st.set_page_config(page_title="InstaTool: Batch & Rename", page_icon="📦", layout="wide")
+st.set_page_config(page_title="InstaTool: Pro", page_icon="⚡", layout="wide")
 
 # --- Helper Functions ---
 
@@ -21,25 +23,24 @@ def cleanup_temp(paths):
                 elif os.path.isdir(p): shutil.rmtree(p)
             except Exception as e: print(f"Cleanup error: {e}")
 
-def get_cookies_path(uploaded_file):
-    if not uploaded_file: return None
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode='wb') as f:
-        f.write(uploaded_file.getvalue())
+def get_cookie_file_from_text(text_data):
+    """Converts pasted cookie text into a temporary file"""
+    if not text_data or len(text_data) < 50: return None
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode='w', encoding='utf-8') as f:
+        f.write(text_data)
         return f.name
 
 def sanitize_filename(name):
-    """Removes illegal characters from filenames."""
     return re.sub(r'[\\/*?:"<>|]', "", name).strip()
 
+def play_success_sound():
+    sound_url = "https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3"
+    st.audio(sound_url, format="audio/mp3", autoplay=True)
+
 def convert_to_quicktime_mp4(input_path, custom_name=None):
-    """
-    Converts to H.264/AAC for Mac compatibility.
-    Renames the file if a custom name is provided.
-    """
     path_obj = Path(input_path)
     if not path_obj.exists(): return None
 
-    # Determine final filename
     if custom_name:
         safe_name = sanitize_filename(custom_name)
         output_filename = f"{safe_name}.mp4"
@@ -49,21 +50,21 @@ def convert_to_quicktime_mp4(input_path, custom_name=None):
     output_path = path_obj.parent / output_filename
 
     try:
-        # Run FFmpeg conversion
         stream = ffmpeg.input(str(input_path))
         stream = ffmpeg.output(
             stream, 
             str(output_path), 
             vcodec='libx264', 
             acodec='aac', 
-            pix_fmt='yuv420p', 
+            pix_fmt='yuv420p',
+            vf='scale=1080:-2:flags=lanczos',
             strict='experimental',
             loglevel='error'
         )
         ffmpeg.run(stream, overwrite_output=True)
         
         if output_path.exists() and output_path.stat().st_size > 0:
-            path_obj.unlink() # Delete original
+            path_obj.unlink()
             return str(output_path)
         return str(input_path)
     except Exception as e:
@@ -73,7 +74,6 @@ def convert_to_quicktime_mp4(input_path, custom_name=None):
 def download_single_video(url, output_dir, cookies_path, custom_name=None):
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        # Temporarily use ID to avoid path length issues during download
         'outtmpl': str(Path(output_dir) / '%(id)s.%(ext)s'), 
         'noplaylist': True,
         'quiet': True,
@@ -86,34 +86,36 @@ def download_single_video(url, output_dir, cookies_path, custom_name=None):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
-            
-            # Verify file existence
             if not os.path.exists(filename):
                 video_id = info.get('id')
                 files = list(Path(output_dir).glob(f"*{video_id}*"))
                 if files: filename = str(files[0])
                 else: return None
-
-            # Convert and Rename
             return convert_to_quicktime_mp4(filename, custom_name)
-            
     except Exception as e:
         return None
 
 # --- Main UI ---
 def main():
-    st.title("📦 InstaTool: Batch & Rename")
-    st.markdown("Download Reels in bulk. Rename them automatically. Convert for Mac.")
+    st.title("📦 InstaTool Pro")
+    st.markdown("Download Reels. **Auto-Upscale to 1080p.** Mac Ready.")
 
-    # --- Sidebar: Cookies ---
+    # --- Sidebar ---
     with st.sidebar:
         st.header("🔐 Authentication")
-        st.info("Upload `cookies.txt` to bypass Instagram login.")
-        uploaded_cookie = st.file_uploader("Upload cookies.txt", type=["txt"])
         
-        cookie_path = get_cookies_path(uploaded_cookie)
+        # Check for Secret First
+        if "INSTAGRAM_COOKIES" in st.secrets:
+            cookie_content = st.secrets["INSTAGRAM_COOKIES"]
+            st.success("✅ Connected to Server Account")
+        else:
+            st.info("Paste your **InstaKey** below:")
+            cookie_content = st.text_area("Access Key", height=100, type="password", help="Use the extension to copy your key.")
+        
+        cookie_path = get_cookie_file_from_text(cookie_content)
+        
         if not cookie_path:
-            st.warning("⚠️ Please upload cookies.txt to start.")
+            st.warning("⚠️ Authentication required.")
             return
 
     # --- Main Input ---
@@ -127,7 +129,6 @@ def main():
     )
     
     if st.button("Download All", type="primary"):
-        # Parse inputs lines
         lines = [line.strip() for line in raw_input.splitlines() if line.strip()]
         
         if not lines:
@@ -139,9 +140,7 @@ def main():
             failed_lines = []
 
             for i, line in enumerate(lines):
-                # 1. Parse Link and Name
                 if " - " in line:
-                    # Split by the first occurrence of " - "
                     parts = line.split(" - ", 1)
                     url = parts[0].strip()
                     custom_name = parts[1].strip()
@@ -151,11 +150,11 @@ def main():
 
                 progress_bar.progress((i) / len(lines), text=f"Downloading: {custom_name if custom_name else url}...")
                 
-                # 2. Download
                 f_path = download_single_video(url, batch_dir, cookie_path, custom_name)
                 
                 if f_path and os.path.exists(f_path):
                     valid_files.append(f_path)
+                    st.toast(f"✅ Ready: {os.path.basename(f_path)}", icon="✨")
                 else:
                     failed_lines.append(url)
                 
@@ -163,17 +162,17 @@ def main():
             
             progress_bar.empty()
             
-            # 3. Zip and Serve
             if valid_files:
+                play_success_sound()
+                st.balloons()
+                st.success(f"🎉 All Done! {len(valid_files)} videos upscaled & ready.")
+                
                 zip_name = "reels_download.zip"
                 zip_path = os.path.join(tempfile.gettempdir(), zip_name)
                 
                 with zipfile.ZipFile(zip_path, 'w') as zipf:
                     for file_path in valid_files:
-                        # Add to zip with clean filename
                         zipf.write(file_path, arcname=os.path.basename(file_path))
-                
-                st.success(f"✅ Ready! {len(valid_files)} videos downloaded.")
                 
                 with open(zip_path, "rb") as f:
                     st.download_button(
